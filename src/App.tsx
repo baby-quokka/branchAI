@@ -1,9 +1,11 @@
+import TreeViewer from "./components/TreeViewer";
+
 function App() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <h1 className="text-4xl font-bold text-blue-600">
-        Tailwind 세팅 성공! 🎉
-      </h1>
+    <div className="min-h-screen bg-gray-900 text-white flex justify-center items-start py-10 px-4">
+      <div className="w-full max-w-2xl">
+        <TreeViewer />
+      </div>
     </div>
   );
 }
