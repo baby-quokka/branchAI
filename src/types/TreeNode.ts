@@ -8,5 +8,6 @@ export type TreeNode = {
     isReply: boolean;
     attachedToIndex?: number;
     summary?: string;
+    createdAt: string;
   };
   
