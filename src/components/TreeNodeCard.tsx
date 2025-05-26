@@ -39,7 +39,9 @@ export default function TreeNodeCard({ node, onToggle }: Props) {
           {lines.map((line, index) => (
             <div key={index}>
               <p
-                data-node-id={node.id}
+                data-node-id={`${node.id}-line-${index}`}
+                data-parent-id={node.id}
+                data-line-index={index}
                 className="inline-block p-3 rounded-md bg-gray-700 text-gray-200 whitespace-pre-line"
               >
                 {line}

@@ -3,14 +3,17 @@ import type { TreeNode } from "../types/TreeNode";
 import TreeNodeCard from "./TreeNodeCard";
 import InputBox from "./InputBox";
 import { v4 as uuidv4 } from "uuid";
-import { fetchGPTAnswer } from "../services/gptService";
+import { fetchGPTAnswer, type ChatMessage } from "../services/gptService";
 import { fetchSummary } from "../services/summaryService";
 import { saveSession } from "../lib/db";
 import Sidebar from "./Sidebar";
+import { buildMessagesFromTree } from "../lib/contextBuilder";
+import { setParentReferences } from "../lib/treeUtils";
 
 const emptyRoot: TreeNode = {
   id: "root",
   parentId: null,
+  parent: null,
   question: "",
   answer: "",
   isExpanded: true,
@@ -31,6 +34,7 @@ export default function TreeViewer() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const sessionIdRef = useRef<string | null>(null);
+  const lineIndexRef = useRef<number | undefined>(undefined);
 
   const renderTOC = (node: TreeNode, depth = -1): React.ReactNode => {
   return (
@@ -55,8 +59,8 @@ export default function TreeViewer() {
         .sort((a, b) => new Date(a.createdAt!).getTime() - new Date(b.createdAt!).getTime())
         .map((child) => renderTOC(child, depth + 1))}
     </div>
-  );
-};
+    );
+  };
 
   const scrollToNode = (id: string) => {
     const el = document.getElementById(id);
@@ -64,6 +68,7 @@ export default function TreeViewer() {
   };
 
   useEffect(() => {
+    setParentReferences(rootNode);
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) {
@@ -92,12 +97,16 @@ export default function TreeViewer() {
         const node = selection.anchorNode;
         const element = node instanceof Element ? node : node?.parentElement ?? undefined;
         const container = element?.closest("[data-node-id]");
-        const nodeId = container?.getAttribute("data-node-id");
-        if (nodeId) {
-          setReplyTargetId(nodeId);
+        const parentId = container?.getAttribute("data-parent-id");
+        const lineIndexStr = container?.getAttribute("data-line-index");
+        const lineIndex = lineIndexStr ? parseInt(lineIndexStr, 10) : undefined;
+
+        if (parentId) {
+          setReplyTargetId(parentId);
           setSelectedText(text);
           setButtonPos({ x: rect.right, y: rect.top + window.scrollY });
           setShowReplyButton(true);
+          lineIndexRef.current = lineIndex; // 새 useRef 만들기
           return;
         }
       }
@@ -114,6 +123,7 @@ export default function TreeViewer() {
     const newNode: TreeNode = {
       id: newNodeId,
       parentId: rootNode.id,
+      parent: rootNode,
       question,
       answer: "답변: 준비 중...",
       isExpanded: true,
@@ -122,6 +132,7 @@ export default function TreeViewer() {
       children: [],
     };
     const workingRoot = { ...rootNode, children: [...rootNode.children, newNode] };
+    setParentReferences(workingRoot);
     setRootNode(workingRoot);
 
     if (!sessionIdRef.current) {
@@ -134,8 +145,10 @@ export default function TreeViewer() {
       savedAt: new Date().toISOString(),
     });
 
-    const gptAnswer = await fetchGPTAnswer(question);
+    const lastNode = rootNode.children[rootNode.children.length - 1];
+    const messages = buildMessagesFromTree(lastNode ?? rootNode, question);    const gptAnswer = await fetchGPTAnswer(messages as ChatMessage[]);
     const updatedTree = updateNodeAnswerById(workingRoot, newNodeId, gptAnswer);
+    setParentReferences(updatedTree);
     setRootNode(updatedTree);
 
     await saveSession({
@@ -152,13 +165,19 @@ export default function TreeViewer() {
     if (replyTargetId && replyInput.trim()) {
       const newId = uuidv4();
       const summary = await fetchSummary(replyInput.trim());
-      let attachedToIndex = undefined;
+      let attachedToIndex = lineIndexRef.current;
 
-      const targetNode = findNodeById(rootNode, replyTargetId);
-      if (targetNode && selectedText) {
-        const lines = targetNode.answer.split("\n");
-        attachedToIndex = lines.findIndex((line) => line.includes(selectedText));
+      if (attachedToIndex === undefined && replyTargetId && selectedText) {
+        const targetNode = findNodeById(rootNode, replyTargetId);
+        if (targetNode) {
+          const lines = targetNode.answer.split("\n");
+          attachedToIndex = lines.findIndex((line) => line.includes(selectedText));
+        }
       }
+
+      console.log("💬 회신 타겟 ID:", replyTargetId);
+      console.log("💬 선택한 텍스트:", selectedText);
+      console.log("💬 실제 붙는 노드:", findNodeById(rootNode, replyTargetId));
 
       const updated = addReplyToNode(
         rootNode,
@@ -168,12 +187,19 @@ export default function TreeViewer() {
         attachedToIndex,
         summary
       );
+      setParentReferences(updated);
       setRootNode(updated);
 
-      const gptAnswer = await fetchGPTAnswer(replyInput.trim());
+      const targetNode = findNodeById(rootNode, replyTargetId);
+      const messages = targetNode
+        ? buildMessagesFromTree(targetNode, replyInput.trim())
+        : [{ role: "user", content: replyInput.trim() }];
+      const gptAnswer = await fetchGPTAnswer(messages as ChatMessage[]);
+      setParentReferences(updated);
       setRootNode(updateNodeAnswerById(updated, newId, gptAnswer));
 
       const updatedWithAnswer = updateNodeAnswerById(updated, newId, gptAnswer);
+      setParentReferences(updatedWithAnswer);
       setRootNode(updatedWithAnswer);
 
       if (!sessionIdRef.current) {
@@ -194,6 +220,7 @@ export default function TreeViewer() {
   };
 
   const handleLoadTree = (tree: TreeNode) => {
+    setParentReferences(tree);
     setRootNode(tree);
   };
 
@@ -203,7 +230,7 @@ export default function TreeViewer() {
   };
 
   return (
-    <div className="flex h-full w-full">
+    <div className="relative flex h-full w-full">
       {isSidebarOpen && <Sidebar onSelect={handleLoadTree} refreshTrigger={refreshTrigger} />}
       <button
         onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -307,6 +334,7 @@ function addReplyToNode(
         {
           id: newId,
           parentId: node.id,
+          parent: node,
           question,
           answer: "답변: 준비 중...",
           isExpanded: true,
